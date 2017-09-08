@@ -68,7 +68,6 @@ import org.gradle.api.internal.project.taskfactory.TaskFactory;
 import org.gradle.api.internal.tasks.execution.statistics.TaskExecutionStatisticsEventAdapter;
 import org.gradle.api.internal.tasks.execution.statistics.TaskExecutionStatisticsListener;
 import org.gradle.api.provider.ProviderFactory;
-import org.gradle.vcs.internal.VcsMappingsInternal;
 import org.gradle.cache.CacheRepository;
 import org.gradle.cache.CacheValidator;
 import org.gradle.caching.internal.BuildCacheServices;
@@ -126,6 +125,7 @@ import org.gradle.internal.actor.ActorFactory;
 import org.gradle.internal.actor.internal.DefaultActorFactory;
 import org.gradle.internal.authentication.AuthenticationSchemeRegistry;
 import org.gradle.internal.authentication.DefaultAuthenticationSchemeRegistry;
+import org.gradle.internal.buildevents.BuildExecutionTimer;
 import org.gradle.internal.classloader.ClassLoaderFactory;
 import org.gradle.internal.classloader.ClassLoaderHierarchyHasher;
 import org.gradle.internal.classpath.CachedClasspathTransformer;
@@ -147,7 +147,6 @@ import org.gradle.internal.service.CachingServiceLocator;
 import org.gradle.internal.service.DefaultServiceRegistry;
 import org.gradle.internal.service.ServiceRegistration;
 import org.gradle.internal.service.ServiceRegistry;
-import org.gradle.internal.buildevents.BuildExecutionTimer;
 import org.gradle.internal.time.Clock;
 import org.gradle.model.internal.inspect.ModelRuleSourceDetector;
 import org.gradle.plugin.repository.internal.PluginRepositoryFactory;
@@ -312,8 +311,7 @@ public class BuildScopeServices extends DefaultServiceRegistry {
                                                                 CachedClasspathTransformer cachedClasspathTransformer,
                                                                 CachingServiceLocator cachingServiceLocator,
                                                                 CompositeContextBuilder compositeContextBuilder,
-                                                                IncludedBuildFactory includedBuildFactory,
-                                                                VcsMappingsInternal sourceControlInternal) {
+                                                                IncludedBuildFactory includedBuildFactory) {
         return new DefaultSettingsLoaderFactory(
             new DefaultSettingsFinder(new BuildLayoutFactory()),
             settingsProcessor,
@@ -327,8 +325,8 @@ public class BuildScopeServices extends DefaultServiceRegistry {
                     PluginsProjectConfigureActions.of(
                         BuildSrcProjectConfigurationAction.class,
                         cachingServiceLocator))),
-            compositeContextBuilder, includedBuildFactory,
-            sourceControlInternal);
+            compositeContextBuilder,
+            includedBuildFactory);
     }
 
     protected InitScriptHandler createInitScriptHandler(ScriptPluginFactory scriptPluginFactory, ScriptHandlerFactory scriptHandlerFactory, BuildOperationExecutor buildOperationExecutor) {
