@@ -126,6 +126,9 @@ public class SourceFoldersCreator {
                     folder.setName(dir.getName());
                     folder.setIncludes(getIncludesForTree(sourceSet, tree));
                     folder.setExcludes(getExcludesForTree(sourceSet, tree));
+
+                    // TODO (donat) we should expect that one folder can be in multiple source sets
+                    folder.getEntryAttributes().put("gradle_source_sets", sourceSet.getName().replaceAll(",", ""));
                     entries.add(folder);
                 }
             }
