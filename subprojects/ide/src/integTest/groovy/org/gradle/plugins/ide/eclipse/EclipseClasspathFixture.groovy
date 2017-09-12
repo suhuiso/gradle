@@ -141,7 +141,7 @@ class EclipseClasspathFixture {
         }
 
         void assertHasNoJavadoc() {
-            assert entry.attributes.isEmpty()
+            assert !entry.attributes.find { it.attribute[0].@name == 'javadoc_location' }
         }
 
         void assertIsDeployedTo(String path) {
