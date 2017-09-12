@@ -126,8 +126,7 @@ class EclipseClasspathFixture {
 
         String getJavadocLocation() {
             assert entry.attributes
-            assert entry.attributes[0].attribute[0].@name == 'javadoc_location'
-            entry.attributes[0].attribute[0].@value
+            entry.attributes[0].find { it.@name == 'javadoc_location' }.@value
         }
 
         void assertHasJavadoc(File file) {
@@ -146,14 +145,12 @@ class EclipseClasspathFixture {
 
         void assertIsDeployedTo(String path) {
             assert entry.attributes
-            assert entry.attributes[0].attribute[0].@name == 'org.eclipse.jst.component.dependency'
-            assert entry.attributes[0].attribute[0].@value == path
+            assert entry.attributes[0].find { it.@name == 'org.eclipse.jst.component.dependency' && it.@value == path }
         }
 
         void assertIsExcludedFromDeployment() {
             assert entry.attributes
-            assert entry.attributes[0].attribute[0].@name == 'org.eclipse.jst.component.nondependency'
-            assert entry.attributes[0].attribute[0].@value == ''
+            assert entry.attributes[0].find { it.@name == 'org.eclipse.jst.component.nondependency' && it.@value == '' }
         }
 
         void assertHasNoDeploymentAttributes() {
