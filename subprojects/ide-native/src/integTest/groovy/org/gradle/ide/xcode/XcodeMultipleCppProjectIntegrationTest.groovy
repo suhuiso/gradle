@@ -17,17 +17,12 @@
 package org.gradle.ide.xcode
 
 import org.gradle.ide.xcode.fixtures.AbstractXcodeIntegrationSpec
+import org.gradle.nativeplatform.fixtures.app.CppAppWithLibrariesWithApiDependencies
 import org.gradle.nativeplatform.fixtures.app.CppAppWithLibrary
 
 import static org.gradle.ide.xcode.internal.XcodeUtils.toSpaceSeparatedList
 
 class XcodeMultipleCppProjectIntegrationTest extends AbstractXcodeIntegrationSpec {
-    def setup() {
-        settingsFile << """
-            include 'app', 'greeter'
-        """
-    }
-
     def "create xcode project C++ executable inside composite build"() {
         given:
         settingsFile.text = """
@@ -69,21 +64,34 @@ class XcodeMultipleCppProjectIntegrationTest extends AbstractXcodeIntegrationSpe
         project.indexTarget.getBuildSettings().HEADER_SEARCH_PATHS == toSpaceSeparatedList(file("src/main/headers"), file("greeter/src/main/public"))
     }
 
-    def "create xcode project C++ executable"() {
+    def "create xcode project C++ executable with library dependencies"() {
         given:
+        settingsFile << "include 'app', 'deck', 'card', 'shuffle'"
         buildFile << """
             project(':app') {
                 apply plugin: 'cpp-executable'
                 dependencies {
-                    implementation project(':greeter')
+                    implementation project(':deck')
                 }
             }
-            project(':greeter') {
+            project(':deck') {
+                apply plugin: 'cpp-library'
+                dependencies {
+                    api project(':card')
+                    implementation project(':shuffle')
+                }
+            }
+            project(':card') {
+                apply plugin: 'cpp-library'
+            }
+            project(':shuffle') {
                 apply plugin: 'cpp-library'
             }
 """
-        def app = new CppAppWithLibrary()
-        app.greeter.writeToProject(file('greeter'))
+        def app = new CppAppWithLibrariesWithApiDependencies()
+        app.deck.writeToProject(file('deck'))
+        app.card.writeToProject(file('card'))
+        app.shuffle.writeToProject(file('shuffle'))
         app.main.writeToProject(file('app'))
 
         when:
@@ -91,13 +99,18 @@ class XcodeMultipleCppProjectIntegrationTest extends AbstractXcodeIntegrationSpe
 
         then:
         executedAndNotSkipped(":app:xcodeProject", ":app:xcodeProjectWorkspaceSettings", ":app:xcodeSchemeAppExecutable", ":app:xcode",
-            ":greeter:xcodeProject", ":greeter:xcodeProjectWorkspaceSettings", ":greeter:xcodeSchemeGreeterSharedLibrary", ":greeter:xcode",
+            ":deck:xcodeProject", ":deck:xcodeProjectWorkspaceSettings", ":deck:xcodeSchemeDeckSharedLibrary", ":deck:xcode",
+            ":card:xcodeProject", ":card:xcodeProjectWorkspaceSettings", ":card:xcodeSchemeCardSharedLibrary", ":card:xcode",
+            ":shuffle:xcodeProject", ":shuffle:xcodeProjectWorkspaceSettings", ":shuffle:xcodeSchemeShuffleSharedLibrary", ":shuffle:xcode",
             ":xcodeWorkspace", ":xcodeWorkspaceWorkspaceSettings", ":xcode")
 
         xcodeWorkspace("${rootProjectName}.xcworkspace")
-            .contentFile.assertHasProjects([file("${rootProjectName}.xcodeproj"), file('app/app.xcodeproj'), file('greeter/greeter.xcodeproj')]*.absolutePath)
+            .contentFile.assertHasProjects([file("${rootProjectName}.xcodeproj"), file('app/app.xcodeproj'), file('deck/deck.xcodeproj'), file('card/card.xcodeproj'), file('shuffle/shuffle.xcodeproj')]*.absolutePath)
 
-        def project = xcodeProject("app/app.xcodeproj").projectFile
-        project.indexTarget.getBuildSettings().HEADER_SEARCH_PATHS == toSpaceSeparatedList(file("app/src/main/headers"), file("greeter/src/main/public"))
+        def appProject = xcodeProject("app/app.xcodeproj").projectFile
+        appProject.indexTarget.getBuildSettings().HEADER_SEARCH_PATHS == toSpaceSeparatedList(file("app/src/main/headers"), file("deck/src/main/public"), file("card/src/main/public"))
+
+        def deckProject = xcodeProject("deck/deck.xcodeproj").projectFile
+        deckProject.indexTarget.getBuildSettings().HEADER_SEARCH_PATHS == toSpaceSeparatedList(file("deck/src/main/public"), file("deck/src/main/headers"), file("card/src/main/public"), file("shuffle/src/main/public"))
     }
 }
