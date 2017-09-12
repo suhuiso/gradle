@@ -22,6 +22,8 @@ import org.gradle.api.internal.initialization.ClassLoaderScope;
 import org.gradle.api.internal.plugins.PluginRegistry;
 import org.gradle.api.internal.project.ProjectInternal;
 import org.gradle.api.internal.project.ProjectRegistry;
+import org.gradle.cache.CacheRepository;
+import org.gradle.cache.internal.CacheKeyBuilder;
 import org.gradle.internal.Factory;
 import org.gradle.internal.resource.TextResourceLoader;
 import org.gradle.plugin.repository.PluginRepository;
@@ -47,6 +49,8 @@ public class PluginResolverFactory implements Factory<PluginResolver> {
     private final PluginRepositoryRegistry pluginRepositoryRegistry;
     private final InjectedClasspathPluginResolver injectedClasspathPluginResolver;
     private final ProjectRegistry<ProjectInternal> projectRegistry;
+    private final CacheRepository cacheRepository;
+    private final CacheKeyBuilder cacheKeyBuilder;
     private final TextResourceLoader textResourceLoader;
 
     public PluginResolverFactory(
@@ -56,6 +60,8 @@ public class PluginResolverFactory implements Factory<PluginResolver> {
         PluginRepositoryRegistry pluginRepositoryRegistry,
         InjectedClasspathPluginResolver injectedClasspathPluginResolver,
         ProjectRegistry<ProjectInternal> projectRegistry,
+        CacheRepository cacheRepository,
+        CacheKeyBuilder cacheKeyBuilder,
         TextResourceLoader textResourceLoader) {
 
         this.pluginRegistry = pluginRegistry;
@@ -64,6 +70,8 @@ public class PluginResolverFactory implements Factory<PluginResolver> {
         this.pluginRepositoryRegistry = pluginRepositoryRegistry;
         this.injectedClasspathPluginResolver = injectedClasspathPluginResolver;
         this.projectRegistry = projectRegistry;
+        this.cacheRepository = cacheRepository;
+        this.cacheKeyBuilder = cacheKeyBuilder;
         this.textResourceLoader = textResourceLoader;
     }
 
@@ -77,6 +85,7 @@ public class PluginResolverFactory implements Factory<PluginResolver> {
         addDefaultResolvers(resolvers);
         return resolvers;
     }
+
     /**
      * Returns the default PluginResolvers used by Gradle.
      * <p>
@@ -100,7 +109,7 @@ public class PluginResolverFactory implements Factory<PluginResolver> {
         resolvers.add(new CorePluginResolver(documentationRegistry, pluginRegistry));
 
         ClassLoaderScope scriptPluginsScope = ScriptPluginsScope.from(projectRegistry);
-        resolvers.add(new ScriptPluginPluginResolver(textResourceLoader, scriptPluginsScope));
+        resolvers.add(new ScriptPluginPluginResolver(cacheRepository, cacheKeyBuilder, textResourceLoader, scriptPluginsScope));
 
         if (!injectedClasspathPluginResolver.isClasspathEmpty()) {
             resolvers.add(injectedClasspathPluginResolver);

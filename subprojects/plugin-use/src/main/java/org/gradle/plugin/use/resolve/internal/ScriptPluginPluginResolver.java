@@ -15,25 +15,35 @@
  */
 package org.gradle.plugin.use.resolve.internal;
 
+import com.google.common.io.Files;
+import org.gradle.api.Action;
 import org.gradle.api.InvalidUserDataException;
 import org.gradle.api.Plugin;
+import org.gradle.api.UncheckedIOException;
 import org.gradle.api.initialization.dsl.ScriptHandler;
 import org.gradle.api.internal.initialization.ClassLoaderScope;
 import org.gradle.api.internal.plugins.PluginImplementation;
 import org.gradle.api.internal.project.ProjectInternal;
 import org.gradle.api.internal.project.ProjectRegistry;
+import org.gradle.cache.CacheRepository;
+import org.gradle.cache.PersistentCache;
+import org.gradle.cache.internal.CacheKeyBuilder;
 import org.gradle.configuration.ScriptPlugin;
 import org.gradle.configuration.ScriptPluginFactory;
+import org.gradle.internal.UncheckedException;
+import org.gradle.internal.classpath.DefaultClassPath;
 import org.gradle.internal.resource.TextResourceLoader;
 import org.gradle.plugin.use.PluginId;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Type;
 
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import javax.inject.Inject;
-import java.net.URL;
-import java.net.URLClassLoader;
+import java.io.File;
+import java.io.IOException;
+import java.util.Collections;
 
 import static org.gradle.internal.hash.HashUtil.createHash;
 import static org.objectweb.asm.Opcodes.*;
@@ -43,11 +53,10 @@ import static org.objectweb.asm.Opcodes.*;
  */
 public class ScriptPluginPluginResolver implements PluginResolver {
 
-    private final ScriptPluginLoaderClassLoader pluginsLoader;
+    private final ScriptPluginLoaderGenerator pluginsLoaderGenerator;
 
-    public ScriptPluginPluginResolver(TextResourceLoader textResourceLoader, ClassLoaderScope targetScope) {
-        pluginsLoader = new ScriptPluginLoaderClassLoader(textResourceLoader, targetScope.getExportClassLoader());
-        targetScope.createChild("script-plugins-loaders").export(pluginsLoader);
+    public ScriptPluginPluginResolver(CacheRepository cacheRepository, CacheKeyBuilder cacheKeyBuilder, TextResourceLoader textResourceLoader, ClassLoaderScope targetScope) {
+        pluginsLoaderGenerator = new ScriptPluginLoaderGenerator(cacheRepository, cacheKeyBuilder, textResourceLoader, targetScope);
     }
 
     public static String getDescription() {
@@ -69,26 +78,26 @@ public class ScriptPluginPluginResolver implements PluginResolver {
             throw new InvalidUserDataException("apply false is not supported for script plugins applied using the plugins block");
         }
 
-        ScriptPluginImplementation scriptPluginImplementation = new ScriptPluginImplementation(pluginRequest, pluginsLoader);
+        ScriptPluginImplementation scriptPluginImplementation = new ScriptPluginImplementation(pluginRequest, pluginsLoaderGenerator);
         result.found(getDescription(), new SimplePluginResolution(scriptPluginImplementation));
     }
 
     private static class ScriptPluginImplementation implements PluginImplementation<Object> {
 
         private final ContextAwarePluginRequest pluginRequest;
-        private final ScriptPluginLoaderClassLoader pluginsLoader;
+        private final ScriptPluginLoaderGenerator pluginLoaderGenerator;
 
         private Class<?> pluginLoaderClass;
 
-        private ScriptPluginImplementation(ContextAwarePluginRequest pluginRequest, ScriptPluginLoaderClassLoader pluginsLoader) {
+        private ScriptPluginImplementation(ContextAwarePluginRequest pluginRequest, ScriptPluginLoaderGenerator pluginLoaderGenerator) {
             this.pluginRequest = pluginRequest;
-            this.pluginsLoader = pluginsLoader;
+            this.pluginLoaderGenerator = pluginLoaderGenerator;
         }
 
         @Override
         public Class<?> asClass() {
             if (pluginLoaderClass == null) {
-                pluginLoaderClass = pluginsLoader.defineScriptPluginLoaderClass(pluginRequest, getDisplayName());
+                pluginLoaderClass = pluginLoaderGenerator.defineScriptPluginLoaderClass(pluginRequest, getDisplayName());
             }
             return pluginLoaderClass;
         }
@@ -125,7 +134,7 @@ public class ScriptPluginPluginResolver implements PluginResolver {
         }
     }
 
-    private static class ScriptPluginLoaderClassLoader extends URLClassLoader {
+    private static class ScriptPluginLoaderGenerator {
 
         private static final Type OBJECT_TYPE = Type.getType(Object.class);
         private static final Type STRING_TYPE = Type.getType(String.class);
@@ -158,25 +167,80 @@ public class ScriptPluginPluginResolver implements PluginResolver {
         private static final String SCRIPT_HANDLER_FIELD_NAME = "scriptHandler";
         private static final String SCRIPT_PLUGIN_FACTORY_FIELD_NAME = "scriptPluginFactory";
 
-        private final TextResourceLoader textResourceLoader;
+        private static final int SCRIPT_PLUGIN_LOADERS_CACHE_VERSION = 1;
 
-        private ScriptPluginLoaderClassLoader(TextResourceLoader textResourceLoader, ClassLoader parentLoader) {
-            super(new URL[0], parentLoader);
+        private final CacheRepository cacheRepository;
+        private final CacheKeyBuilder cacheKeyBuilder;
+        private final TextResourceLoader textResourceLoader;
+        private final ClassLoaderScope parentLoaderScope;
+
+        private ScriptPluginLoaderGenerator(CacheRepository cacheRepository, CacheKeyBuilder cacheKeyBuilder, TextResourceLoader textResourceLoader, ClassLoaderScope parentLoaderScope) {
+            this.cacheRepository = cacheRepository;
+            this.cacheKeyBuilder = cacheKeyBuilder;
             this.textResourceLoader = textResourceLoader;
+            this.parentLoaderScope = parentLoaderScope;
         }
 
-        private Class<?> defineScriptPluginLoaderClass(ContextAwarePluginRequest pluginRequest, String displayName) {
+        private Class<?> defineScriptPluginLoaderClass(ContextAwarePluginRequest pluginRequest, final String displayName) {
 
-            String scriptContent = scriptContentFor(pluginRequest);
-            String scriptContentHash = createHash(scriptContent, "SHA1").asCompactString();
-            String classSimpleName = loaderClassSimpleNameFor(scriptContentHash);
+            final String scriptContent = scriptContentFor(pluginRequest);
+            final String scriptContentHash = createHash(scriptContent, "SHA1").asCompactString();
+            final String classSimpleName = loaderClassSimpleNameFor(scriptContentHash);
+            final String classBinaryName = loaderClassBinaryNameFor(classSimpleName);
 
-            Class<?> syntheticLoaderClass = alreadyDefined(classSimpleName);
-            if (syntheticLoaderClass != null) {
-                // Don't redefine synthetic script plugin loader classes
-                return syntheticLoaderClass;
+            CacheKeyBuilder.CacheKeySpec cacheKeySpec = CacheKeyBuilder.CacheKeySpec
+                .withPrefix("script-plugin-loaders")
+                .plus(String.valueOf(SCRIPT_PLUGIN_LOADERS_CACHE_VERSION))
+                .plus(scriptContentHash);
+
+            final String cacheClassPathDirName = "cp";
+
+            PersistentCache cache = cacheRepository.cache(cacheKeyBuilder.build(cacheKeySpec))
+                .withInitializer(new Action<PersistentCache>() {
+                    @Override
+                    public void execute(@Nonnull PersistentCache cache) {
+
+                        byte[] bytes = generateScriptPluginLoaderClass(classSimpleName, scriptContent, scriptContentHash, displayName);
+
+                        String classFilePath = cacheClassPathDirName + "/" + SYNTHETIC_LOADER_PACKAGE_PATH + "/" + classSimpleName + ".class";
+                        File classFile = new File(cache.getBaseDir(), classFilePath);
+
+                        try {
+                            Files.createParentDirs(classFile);
+                            Files.write(bytes, classFile);
+                        } catch (IOException e) {
+                            throw new UncheckedIOException(e);
+                        }
+                    }
+                })
+                .open();
+            cache.close();
+
+            File classpathDir = new File(cache.getBaseDir(), cacheClassPathDirName);
+            ClassLoaderScope loaderScope = parentLoaderScope.createChild("script-plugin-loader-" + scriptContentHash);
+            loaderScope.export(DefaultClassPath.of(Collections.singleton(classpathDir)));
+            loaderScope.lock();
+
+            try {
+                return loaderScope.getExportClassLoader().loadClass(classBinaryName);
+            } catch (ClassNotFoundException e) {
+                throw UncheckedException.throwAsUncheckedException(e);
             }
+        }
 
+        private String scriptContentFor(ContextAwarePluginRequest pluginRequest) {
+            return textResourceLoader.loadUri("script plugin", pluginRequest.getScriptUri()).getText();
+        }
+
+        private String loaderClassSimpleNameFor(String scriptContentHash) {
+            return SYNTHETIC_LOADER_CLASSNAME_PREFIX + scriptContentHash;
+        }
+
+        private String loaderClassBinaryNameFor(String classSimpleName) {
+            return SYNTHETIC_LOADER_PACKAGE_NAME + "." + classSimpleName;
+        }
+
+        private byte[] generateScriptPluginLoaderClass(String classSimpleName, String scriptContent, String scriptContentHash, String displayName) {
             String syntheticLoaderInternalName = SYNTHETIC_LOADER_PACKAGE_PATH + "/" + classSimpleName;
 
             ClassWriter cw = new ClassWriter(0);
@@ -188,22 +252,7 @@ public class ScriptPluginPluginResolver implements PluginResolver {
             defineToStringMethod(cw, displayName);
 
             cw.visitEnd();
-            byte[] bytes = cw.toByteArray();
-            return defineClass(SYNTHETIC_LOADER_PACKAGE_NAME + "." + classSimpleName, bytes, 0, bytes.length);
-        }
-
-        private String scriptContentFor(ContextAwarePluginRequest pluginRequest) {
-            return textResourceLoader.loadUri("script plugin", pluginRequest.getScriptUri()).getText();
-        }
-
-        @Nullable
-        private Class<?> alreadyDefined(String classSimpleName) {
-            String syntheticLoaderBinaryName = SYNTHETIC_LOADER_PACKAGE_NAME + "." + classSimpleName;
-            try {
-                return loadClass(syntheticLoaderBinaryName);
-            } catch (ClassNotFoundException e) {
-                return null;
-            }
+            return cw.toByteArray();
         }
 
         private void defineInstanceMembers(ClassWriter cw) {
@@ -263,10 +312,6 @@ public class ScriptPluginPluginResolver implements PluginResolver {
             toString.visitLdcInsn(string);
             toString.visitInsn(ARETURN);
             toString.visitEnd();
-        }
-
-        private String loaderClassSimpleNameFor(String scriptContentHash) {
-            return SYNTHETIC_LOADER_CLASSNAME_PREFIX + scriptContentHash;
         }
     }
 }
